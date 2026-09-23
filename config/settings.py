@@ -18,8 +18,8 @@ PERSONA_CONFIG_PATH = Path(__file__).parent / "persona.json"
 class Settings(BaseModel):
     telegram_bot_token: str
     gemini_api_key: str
+    database_url: str
     gemini_model: str = "gemini-flash-latest"
-    db_path: str = "meera_bot.db"
     webhook_secret: str = ""
 
 
@@ -28,19 +28,18 @@ class MissingEnvironmentVariable(RuntimeError):
 
 
 def load_settings() -> Settings:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    api_key = os.environ.get("GEMINI_API_KEY")
-    missing = [name for name, value in (("TELEGRAM_BOT_TOKEN", token), ("GEMINI_API_KEY", api_key)) if not value]
+    required = {name: os.environ.get(name) for name in ("TELEGRAM_BOT_TOKEN", "GEMINI_API_KEY", "DATABASE_URL")}
+    missing = [name for name, value in required.items() if not value]
     if missing:
         raise MissingEnvironmentVariable(
             f"Missing required environment variable(s): {', '.join(missing)}. "
             "Copy .env.example to .env and fill them in."
         )
     return Settings(
-        telegram_bot_token=token,
-        gemini_api_key=api_key,
+        telegram_bot_token=required["TELEGRAM_BOT_TOKEN"],
+        gemini_api_key=required["GEMINI_API_KEY"],
+        database_url=required["DATABASE_URL"],
         gemini_model=os.environ.get("GEMINI_MODEL", "gemini-flash-latest"),
-        db_path=os.environ.get("MEERA_BOT_DB_PATH", "meera_bot.db"),
         webhook_secret=os.environ.get("TELEGRAM_WEBHOOK_SECRET", ""),
     )
 
