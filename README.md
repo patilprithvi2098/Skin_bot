@@ -48,7 +48,7 @@ api/webhook.py              Vercel serverless entrypoint (Telegram webhook)
 bot/main.py                 Application wiring + local polling entrypoint
 bot/handlers.py             Command, text and voice handlers
 bot/webhook.py              Webhook update processing + secret check
-services/context_manager.py SQLite store for topics and notes (auto-creates schema)
+services/context_manager.py Postgres (Supabase) store for topics and notes (auto-creates schema)
 services/gemini_client.py   Gemini calls (google-genai, async)
 services/transcription.py   Voice-to-text adapter interface
 prompts/meera_persona.py    Persona prompt, voice validator, prompt-injection filter
@@ -68,7 +68,7 @@ Copy `.env.example` to `.env` for local runs. Never commit `.env`.
 | `TELEGRAM_BOT_TOKEN` | yes | | From @BotFather |
 | `GEMINI_API_KEY` | yes | | From Google AI Studio |
 | `GEMINI_MODEL` | no | `gemini-flash-latest` | An alias that follows the current Flash model, so the bot keeps working when a version is retired |
-| `MEERA_BOT_DB_PATH` | no | `meera_bot.db` | Use `/tmp/meera_bot.db` on Vercel |
+| `DATABASE_URL` | yes | | Supabase **Transaction pooler** URI (port 6543) from Dashboard → Connect, with your database password filled in |
 | `TELEGRAM_WEBHOOK_SECRET` | webhook only | | Random string. Telegram sends it back on every webhook call, and requests without it are rejected |
 
 ## Run locally (polling)
@@ -86,8 +86,8 @@ Polling calls `deleteWebhook` on startup, which **disconnects the Vercel deploym
 
 ## Deploy on Vercel (webhook mode)
 
-1. Import the GitHub repo into Vercel. `api/webhook.py` is picked up automatically as a Python function at `/api/webhook`.
-2. Set these environment variables in the Vercel project: `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `MEERA_BOT_DB_PATH=/tmp/meera_bot.db`, `TELEGRAM_WEBHOOK_SECRET`.
+1. Import the GitHub repo into Vercel. `api/webhook.py` is picked up automatically as a Python function at `/api/webhook`. `vercel.json` pins it to Mumbai (`bom1`), the same region as the Supabase database, so each message only makes short database round-trips.
+2. Set these environment variables in the Vercel project: `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `DATABASE_URL`, `TELEGRAM_WEBHOOK_SECRET`.
 3. Point Telegram at the production URL (put the same `TELEGRAM_WEBHOOK_SECRET` in your local `.env`):
    ```bash
    python scripts/set_webhook.py https://<your-project>.vercel.app/api/webhook
@@ -96,11 +96,12 @@ Polling calls `deleteWebhook` on startup, which **disconnects the Vercel deploym
 
 The production domain must not be behind Vercel Deployment Protection, or Telegram's requests will get a 401.
 
-### Known limitation: notes don't persist on Vercel
+### Storage
 
-Vercel functions have no persistent disk. SQLite lives in `/tmp`, which is wiped whenever an instance is recycled (cold start, redeploy, scale-out). **Notes can disappear between messages.** This was an accepted tradeoff for this deployment. To get real zero-data-loss, either:
-- move `ContextManager` to hosted Postgres (Supabase / Neon), or
-- run the polling bot on a host with a persistent disk (Railway, Fly.io, a VPS).
+Notes are stored in Supabase Postgres (tables `topics` and `notes`), so they survive cold starts, redeploys and bot restarts. The bot creates the tables on first run if they're missing.
+- A partial unique index ensures each chat has exactly one active topic, even when two Telegram updates arrive at the same moment.
+- Row-level security is on with no policies, so Supabase's public Data API can't read notes. Only the bot's direct database connection can, because it connects as the tables' owner.
+- The bot connects through Supabase's transaction pooler, which suits serverless functions that open a short-lived connection for each request.
 
 ## Voice notes
 
@@ -121,3 +122,5 @@ Voice messages are downloaded into memory, handed to a `TranscriptionAdapter`, a
 pip install -r requirements-dev.txt
 pytest
 ```
+
+`tests/test_context_manager.py` runs against a real database. It uses `TEST_DATABASE_URL`, or `DATABASE_URL` from `.env`, and is skipped when neither is set. Each test uses its own random chat IDs and deletes them afterwards. The other tests mock Telegram, Gemini and storage.
