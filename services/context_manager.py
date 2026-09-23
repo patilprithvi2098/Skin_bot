@@ -1,4 +1,4 @@
-"""SQLite-backed session context manager, scoped by Telegram chat_id.
+"""Postgres-backed (Supabase) session context manager, scoped by Telegram chat_id.
 
 Notes accumulate under a single active "topic thread" per chat. Starting a new
 topic archives the previous one (its notes stay in the database but drop out
@@ -7,34 +7,42 @@ over time without them bleeding into each other.
 """
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
 
-import aiosqlite
+import asyncpg
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS topics (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    chat_id INTEGER NOT NULL,
+    id BIGSERIAL PRIMARY KEY,
+    chat_id BIGINT NOT NULL,
     title TEXT NOT NULL,
-    created_at REAL NOT NULL,
-    active INTEGER NOT NULL DEFAULT 1
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    active BOOLEAN NOT NULL DEFAULT true
 );
 
 CREATE TABLE IF NOT EXISTS notes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    chat_id INTEGER NOT NULL,
-    topic_id INTEGER NOT NULL,
-    timestamp REAL NOT NULL,
+    id BIGSERIAL PRIMARY KEY,
+    chat_id BIGINT NOT NULL,
+    topic_id BIGINT NOT NULL REFERENCES topics (id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     text TEXT NOT NULL,
-    source TEXT NOT NULL,
-    FOREIGN KEY (topic_id) REFERENCES topics (id)
+    source TEXT NOT NULL CHECK (source IN ('text', 'voice'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_notes_topic ON notes (topic_id);
-CREATE INDEX IF NOT EXISTS idx_topics_chat_active ON topics (chat_id, active);
+CREATE UNIQUE INDEX IF NOT EXISTS topics_one_active_per_chat ON topics (chat_id) WHERE active;
+CREATE INDEX IF NOT EXISTS notes_topic_id_idx ON notes (topic_id, id);
+
+ALTER TABLE topics ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
 """
+
+_TOPIC_COLUMNS = "id, chat_id, title, created_at, active"
+_NOTE_COLUMNS = "id, chat_id, topic_id, created_at, text, source"
+
+# Schema DDL only needs to run once per process, not on every webhook request.
+_schema_ready = False
 
 
 @dataclass
@@ -42,7 +50,7 @@ class Note:
     id: int
     chat_id: int
     topic_id: int
-    timestamp: float
+    created_at: datetime
     text: str
     source: str
 
@@ -52,85 +60,82 @@ class Topic:
     id: int
     chat_id: int
     title: str
-    created_at: float
+    created_at: datetime
     active: bool
 
 
 class ContextManager:
     """Tracks per-chat topic threads and the notes accumulated under them."""
 
-    def __init__(self, db_path: str):
-        self._db_path = db_path
-        self._db: Optional[aiosqlite.Connection] = None
+    def __init__(self, database_url: str):
+        self._database_url = database_url
+        self._conn: Optional[asyncpg.Connection] = None
 
     async def init(self) -> None:
-        self._db = await aiosqlite.connect(self._db_path)
-        await self._db.executescript(SCHEMA)
-        await self._db.commit()
+        global _schema_ready
+        # Supabase's transaction pooler can't hold prepared statements across transactions.
+        self._conn = await asyncpg.connect(self._database_url, statement_cache_size=0)
+        if not _schema_ready:
+            await self._conn.execute(SCHEMA)
+            _schema_ready = True
 
     async def close(self) -> None:
-        if self._db is not None:
-            await self._db.close()
-            self._db = None
+        if self._conn is not None:
+            await self._conn.close()
+            self._conn = None
+
+    @property
+    def _db(self) -> asyncpg.Connection:
+        assert self._conn is not None, "ContextManager.init() was not called"
+        return self._conn
 
     async def _get_or_create_active_topic(self, chat_id: int) -> Topic:
+        # ON CONFLICT makes this safe when two updates for a new chat arrive at once.
+        await self._db.execute(
+            "INSERT INTO topics (chat_id, title) VALUES ($1, 'General') "
+            "ON CONFLICT (chat_id) WHERE active DO NOTHING",
+            chat_id,
+        )
         topic = await self.get_active_topic(chat_id)
-        if topic is not None:
-            return topic
-        return await self.start_new_topic(chat_id, title="General")
+        assert topic is not None
+        return topic
 
     async def start_new_topic(self, chat_id: int, title: str) -> Topic:
-        assert self._db is not None
-        await self._db.execute(
-            "UPDATE topics SET active = 0 WHERE chat_id = ? AND active = 1",
-            (chat_id,),
-        )
-        now = time.time()
-        cursor = await self._db.execute(
-            "INSERT INTO topics (chat_id, title, created_at, active) VALUES (?, ?, ?, 1)",
-            (chat_id, title, now),
-        )
-        await self._db.commit()
-        return Topic(id=cursor.lastrowid, chat_id=chat_id, title=title, created_at=now, active=True)
+        async with self._db.transaction():
+            await self._db.execute("UPDATE topics SET active = false WHERE chat_id = $1 AND active", chat_id)
+            row = await self._db.fetchrow(
+                f"INSERT INTO topics (chat_id, title) VALUES ($1, $2) RETURNING {_TOPIC_COLUMNS}",
+                chat_id,
+                title,
+            )
+        return Topic(**dict(row))
 
     async def get_active_topic(self, chat_id: int) -> Optional[Topic]:
-        assert self._db is not None
-        cursor = await self._db.execute(
-            "SELECT id, chat_id, title, created_at, active FROM topics "
-            "WHERE chat_id = ? AND active = 1 ORDER BY id DESC LIMIT 1",
-            (chat_id,),
+        row = await self._db.fetchrow(
+            f"SELECT {_TOPIC_COLUMNS} FROM topics WHERE chat_id = $1 AND active",
+            chat_id,
         )
-        row = await cursor.fetchone()
-        if row is None:
-            return None
-        return Topic(id=row[0], chat_id=row[1], title=row[2], created_at=row[3], active=bool(row[4]))
+        return Topic(**dict(row)) if row else None
 
     async def add_note(self, chat_id: int, text: str, source: str = "text") -> Note:
-        assert self._db is not None
         topic = await self._get_or_create_active_topic(chat_id)
-        now = time.time()
-        cursor = await self._db.execute(
-            "INSERT INTO notes (chat_id, topic_id, timestamp, text, source) VALUES (?, ?, ?, ?, ?)",
-            (chat_id, topic.id, now, text, source),
+        row = await self._db.fetchrow(
+            f"INSERT INTO notes (chat_id, topic_id, text, source) VALUES ($1, $2, $3, $4) RETURNING {_NOTE_COLUMNS}",
+            chat_id,
+            topic.id,
+            text,
+            source,
         )
-        await self._db.commit()
-        return Note(id=cursor.lastrowid, chat_id=chat_id, topic_id=topic.id, timestamp=now, text=text, source=source)
+        return Note(**dict(row))
 
     async def get_active_notes(self, chat_id: int) -> list[Note]:
-        assert self._db is not None
-        topic = await self.get_active_topic(chat_id)
-        if topic is None:
-            return []
-        cursor = await self._db.execute(
-            "SELECT id, chat_id, topic_id, timestamp, text, source FROM notes "
-            "WHERE topic_id = ? ORDER BY timestamp ASC",
-            (topic.id,),
+        rows = await self._db.fetch(
+            f"SELECT {', '.join('n.' + c for c in _NOTE_COLUMNS.split(', '))} "
+            "FROM notes n JOIN topics t ON t.id = n.topic_id "
+            "WHERE t.chat_id = $1 AND t.active ORDER BY n.id",
+            chat_id,
         )
-        rows = await cursor.fetchall()
-        return [
-            Note(id=r[0], chat_id=r[1], topic_id=r[2], timestamp=r[3], text=r[4], source=r[5])
-            for r in rows
-        ]
+        return [Note(**dict(r)) for r in rows]
 
     async def get_status(self, chat_id: int) -> dict:
         topic = await self.get_active_topic(chat_id)
@@ -140,14 +145,12 @@ class ContextManager:
         return {
             "topic": topic.title,
             "note_count": len(notes),
-            "last_update": notes[-1].timestamp if notes else topic.created_at,
+            "last_update": notes[-1].created_at if notes else topic.created_at,
         }
 
     async def clear_active_topic(self, chat_id: int) -> int:
-        assert self._db is not None
         topic = await self.get_active_topic(chat_id)
         if topic is None:
             return 0
-        cursor = await self._db.execute("DELETE FROM notes WHERE topic_id = ?", (topic.id,))
-        await self._db.commit()
-        return cursor.rowcount
+        status = await self._db.execute("DELETE FROM notes WHERE topic_id = $1", topic.id)
+        return int(status.split()[-1])
