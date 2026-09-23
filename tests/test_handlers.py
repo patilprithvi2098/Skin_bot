@@ -1,12 +1,54 @@
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest_asyncio
+import pytest
 
 from bot import handlers
 from models.schema import PersonaConfig
-from services.context_manager import ContextManager
+from services.context_manager import Note, Topic
 from services.gemini_client import GeminiServiceError
 from services.transcription import NotConfiguredTranscriptionAdapter
+
+
+class InMemoryContextManager:
+    """Same async interface as ContextManager, kept in memory so handler tests need no database."""
+
+    def __init__(self):
+        self.topics: list[Topic] = []
+        self.notes: list[Note] = []
+
+    async def get_active_topic(self, chat_id):
+        return next((t for t in self.topics if t.chat_id == chat_id and t.active), None)
+
+    async def start_new_topic(self, chat_id, title):
+        for t in self.topics:
+            if t.chat_id == chat_id:
+                t.active = False
+        topic = Topic(len(self.topics) + 1, chat_id, title, datetime.now(timezone.utc), True)
+        self.topics.append(topic)
+        return topic
+
+    async def add_note(self, chat_id, text, source="text"):
+        topic = await self.get_active_topic(chat_id) or await self.start_new_topic(chat_id, "General")
+        note = Note(len(self.notes) + 1, chat_id, topic.id, datetime.now(timezone.utc), text, source)
+        self.notes.append(note)
+        return note
+
+    async def get_active_notes(self, chat_id):
+        topic = await self.get_active_topic(chat_id)
+        return [n for n in self.notes if topic and n.topic_id == topic.id]
+
+    async def get_status(self, chat_id):
+        topic = await self.get_active_topic(chat_id)
+        if topic is None:
+            return {"topic": None, "note_count": 0, "last_update": None}
+        notes = await self.get_active_notes(chat_id)
+        return {"topic": topic.title, "note_count": len(notes), "last_update": None}
+
+    async def clear_active_topic(self, chat_id):
+        active = await self.get_active_notes(chat_id)
+        self.notes = [n for n in self.notes if n not in active]
+        return len(active)
 
 
 class FakeGeminiClient:
@@ -44,12 +86,9 @@ def make_context(context_manager, gemini_client, args=None):
     return context
 
 
-@pytest_asyncio.fixture
-async def context_manager(tmp_path):
-    cm = ContextManager(str(tmp_path / "test.db"))
-    await cm.init()
-    yield cm
-    await cm.close()
+@pytest.fixture
+def context_manager():
+    return InMemoryContextManager()
 
 
 async def test_text_message_handler_stores_note(context_manager):

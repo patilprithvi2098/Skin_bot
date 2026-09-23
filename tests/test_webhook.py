@@ -19,11 +19,11 @@ def test_is_authorized_rejects_everything_when_no_secret_configured():
     assert is_authorized("anything", "") is False
 
 
-async def test_process_update_payload_dispatches_and_closes_db(tmp_path):
+async def test_process_update_payload_dispatches_and_closes_db():
     settings = Settings(
         telegram_bot_token="123:fake",
         gemini_api_key="fake",
-        db_path=str(tmp_path / "hook.db"),
+        database_url="postgresql://unused",
     )
     application = MagicMock()
     application.__aenter__ = AsyncMock(return_value=application)
