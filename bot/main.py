@@ -64,7 +64,7 @@ def build_application(
         .build()
     )
 
-    application.bot_data["context_manager"] = ContextManager(settings.db_path)
+    application.bot_data["context_manager"] = ContextManager(settings.database_url)
     application.bot_data["gemini_client"] = GeminiClient(settings.gemini_api_key, settings.gemini_model)
     application.bot_data["transcription_adapter"] = transcription_adapter or NotConfiguredTranscriptionAdapter()
     application.bot_data["persona"] = load_persona_config()
