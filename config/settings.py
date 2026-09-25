@@ -13,6 +13,7 @@ from models.schema import PersonaConfig
 load_dotenv()
 
 PERSONA_CONFIG_PATH = Path(__file__).parent / "persona.json"
+DEFAULT_GEMINI_FALLBACK_MODELS = "gemini-3.6-flash,gemini-3.5-flash,gemini-flash-lite-latest"
 
 
 class Settings(BaseModel):
@@ -20,7 +21,12 @@ class Settings(BaseModel):
     gemini_api_key: str
     database_url: str
     gemini_model: str = "gemini-flash-latest"
+    gemini_fallback_models: list[str] = []
     webhook_secret: str = ""
+
+    @property
+    def gemini_models(self) -> list[str]:
+        return list(dict.fromkeys([self.gemini_model, *self.gemini_fallback_models]))
 
 
 class MissingEnvironmentVariable(RuntimeError):
@@ -40,6 +46,11 @@ def load_settings() -> Settings:
         gemini_api_key=required["GEMINI_API_KEY"],
         database_url=required["DATABASE_URL"],
         gemini_model=os.environ.get("GEMINI_MODEL", "gemini-flash-latest"),
+        gemini_fallback_models=[
+            m.strip()
+            for m in os.environ.get("GEMINI_FALLBACK_MODELS", DEFAULT_GEMINI_FALLBACK_MODELS).split(",")
+            if m.strip()
+        ],
         webhook_secret=os.environ.get("TELEGRAM_WEBHOOK_SECRET", ""),
     )
 
