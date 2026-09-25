@@ -67,7 +67,8 @@ Copy `.env.example` to `.env` for local runs. Never commit `.env`.
 |---|---|---|---|
 | `TELEGRAM_BOT_TOKEN` | yes | | From @BotFather |
 | `GEMINI_API_KEY` | yes | | From Google AI Studio |
-| `GEMINI_MODEL` | no | `gemini-flash-latest` | An alias that follows the current Flash model, so the bot keeps working when a version is retired |
+| `GEMINI_MODEL` | no | `gemini-flash-latest` | First model the bot tries |
+| `GEMINI_FALLBACK_MODELS` | no | `gemini-3.6-flash,gemini-3.5-flash,gemini-flash-lite-latest` | Tried in order when a model is busy (503), rate limited (429) or retired (404) |
 | `DATABASE_URL` | yes | | Supabase **Transaction pooler** URI (port 6543) from Dashboard → Connect, with your database password filled in |
 | `TELEGRAM_WEBHOOK_SECRET` | webhook only | | Random string. Telegram sends it back on every webhook call, and requests without it are rejected |
 
@@ -113,7 +114,7 @@ Voice messages are downloaded into memory, handed to a `TranscriptionAdapter`, a
 - **Prompt-injection filter.** Messages such as "ignore previous instructions" or "reveal your system prompt" are refused and never stored.
 - **Traceability.** The prompt tells Gemini to use only facts from your notes, and the validator reports how many notes show up in the draft.
 - **No notes, no draft.** `/draft_post` with an empty topic asks you for notes instead of inventing content.
-- **Graceful failures.** Gemini errors (rate limit, 503, network) produce a Telegram message asking you to retry `/draft_post`. Unhandled errors are logged and the user gets a short apology.
+- **Graceful failures.** A busy or retired Gemini model makes the bot try the next one in the fallback list. If all of them fail, you get a plain-language message with a **Try again** button (your notes stay saved). Unhandled errors are logged and the user gets a short apology.
 - **Buzzword blocklist.** Edit `banned_phrases` in `config/persona.json` (it includes "delighted to share", "game-changer" and "humbled").
 
 ## Tests
