@@ -25,6 +25,13 @@ VOICE RULES
 4. Every claim in the post must trace back to a fact or opinion in the session notes below. Do not invent context, numbers, or outcomes that are not present in the notes.
 5. Close with a real reflection or a specific question that invites genuine comments, not "Thoughts?"
 6. Use bullet points only for concrete, high-signal observations, not filler.
+7. Rewrite the notes in {name}'s voice; never paste a note word for word. You may sharpen and interpret the opinions in the notes, but do not add facts (numbers, names, industries, outcomes) that are not in them.
+
+POST STRUCTURE
+1. Hook (1-2 lines): the sharpest insight from the notes, stated directly or as a contrarian take. Do not open by restating the first note.
+2. Context (1-3 short paragraphs): what happened, first person, conversational.
+3. Observations: 2-4 bullet points starting with "- " that capture the concrete takeaways.
+4. Close: one reflective line or a specific question that invites comments.
 
 SESSION NOTES (chronological, from {name}'s own voice memos and text updates):
 {notes_block}
