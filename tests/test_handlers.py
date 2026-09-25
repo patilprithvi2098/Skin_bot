@@ -159,5 +159,24 @@ async def test_draft_post_handles_gemini_failure_gracefully(context_manager):
 
     await handlers.draft_post_command(update, context)
 
-    message = update.effective_message.reply_text.call_args.args[0]
-    assert "couldn't generate a draft" in message
+    call = update.effective_message.reply_text.call_args
+    assert "couldn't write the draft" in call.args[0]
+    assert "rate limited" not in call.args[0]
+    [[button]] = call.kwargs["reply_markup"].inline_keyboard
+    assert button.callback_data == handlers.RETRY_DRAFT
+
+
+async def test_retry_button_removes_itself_and_drafts_again(context_manager):
+    await context_manager.add_note(1, "Customers hate bolted-on chatbots.")
+    gemini_client = FakeGeminiClient(response="Nobody wants another chatbot.\n\nWhat would you cut?")
+    update = make_update()
+    update.callback_query.answer = AsyncMock()
+    update.callback_query.edit_message_reply_markup = AsyncMock()
+    context = make_context(context_manager, gemini_client)
+
+    await handlers.retry_draft_callback(update, context)
+
+    update.callback_query.answer.assert_awaited_once()
+    update.callback_query.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
+    assert gemini_client.received_notes == ["Customers hate bolted-on chatbots."]
+    assert "Nobody wants another chatbot." in update.effective_message.reply_text.call_args_list[-1].args[0]
