@@ -4,13 +4,15 @@ from __future__ import annotations
 import logging
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from bot.handlers import (
+    RETRY_DRAFT,
     addnote_command,
     clear_command,
     draft_post_command,
     newtopic_command,
+    retry_draft_callback,
     start_command,
     status_command,
     text_message_handler,
@@ -65,7 +67,7 @@ def build_application(
     )
 
     application.bot_data["context_manager"] = ContextManager(settings.database_url)
-    application.bot_data["gemini_client"] = GeminiClient(settings.gemini_api_key, settings.gemini_model)
+    application.bot_data["gemini_client"] = GeminiClient(settings.gemini_api_key, settings.gemini_models)
     application.bot_data["transcription_adapter"] = transcription_adapter or NotConfiguredTranscriptionAdapter()
     application.bot_data["persona"] = load_persona_config()
 
@@ -75,6 +77,7 @@ def build_application(
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("draft_post", draft_post_command))
     application.add_handler(CommandHandler("clear", clear_command))
+    application.add_handler(CallbackQueryHandler(retry_draft_callback, pattern=f"^{RETRY_DRAFT}$"))
     application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_message_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
     application.add_error_handler(error_handler)

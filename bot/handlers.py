@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from models.schema import PersonaConfig, ValidationResult
@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 MIN_NOTES_FOR_DRAFT = 1
 TELEGRAM_MESSAGE_LIMIT = 4000
+RETRY_DRAFT = "retry_draft_post"
 
 
 def _services(
@@ -146,18 +147,24 @@ async def draft_post_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     try:
         draft_text = await gemini_client.generate_post(note_texts, persona)
-    except GeminiServiceError as exc:
+    except GeminiServiceError:
         logger.exception("Gemini generation failed")
         await update.effective_message.reply_text(
-            "Gemini couldn't generate a draft right now (rate limit or network issue).\n"
-            f"Details: {exc}\n"
-            "Send /draft_post again in a moment to retry."
+            "Google's AI models are all busy right now, so I couldn't write the draft. "
+            "Your notes are saved. Tap below to try again in a minute.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Try again", callback_data=RETRY_DRAFT)]]),
         )
         return
 
     validation = validate_voice(draft_text, persona, source_facts=note_texts)
     message = _format_draft_message(draft_text, validation, note_texts)
     await _reply_in_chunks(update, message)
+
+
+async def retry_draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_reply_markup(reply_markup=None)
+    await draft_post_command(update, context)
 
 
 def _format_draft_message(draft_text: str, validation: ValidationResult, note_texts: list[str]) -> str:
